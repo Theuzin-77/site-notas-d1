@@ -1,0 +1,50 @@
+﻿name: ai-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: IA revisa vulnerabilidades
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diff = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            
+            let comentarios = [];
+            for (const file of diff.data) {
+              if (file.filename.endsWith('.html') || file.filename.endsWith('.js')) {
+                if (file.patch && (file.patch.includes('innerHTML') || file.patch.includes('eval('))) {
+                  comentarios.push(`⚠️ **IA - Possível XSS em ${file.filename}**: uso de innerHTML/eval pode ser perigoso.`);
+                }
+                if (file.patch && file.patch.toLowerCase().includes('select') && file.patch.includes('${')) {
+                  comentarios.push(`⚠️ **IA - Possível SQL Injection em ${file.filename}**: concatenação de variável em query.`);
+                }
+              }
+              if (file.patch && /GOCSPX-|client_secret/.test(file.patch)) {
+                comentarios.push(`🚨 **IA - Segredo detectado em ${file.filename}**: possível client_secret versionado!`);
+              }
+            }
+            
+            if (comentarios.length === 0) {
+              comentarios.push('✅ **IA Review**: Nenhuma vulnerabilidade crítica de XSS, SQLi ou segredo encontrada neste PR. Bom trabalho!');
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comentarios.join('\n\n')
+            });
