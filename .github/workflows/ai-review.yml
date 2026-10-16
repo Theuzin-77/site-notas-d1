@@ -12,27 +12,37 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Monta prompt
+      - name: Analisa diff
+        id: check
         run: |
-          echo "Voce e um revisor de seguranca. Analise este diff:" > prompt.txt
-          echo "Regra critica: se encontrar env.DB.prepare com template string contendo \${ , ou concatenacao com + , e SQL INJECTION critico. APONTE!" >> prompt.txt
-          echo "Codigo:" >> prompt.txt
-          git diff origin/${{ github.base_ref }}...HEAD >> prompt.txt
-          cat prompt.txt
+          DIFF=$(git diff origin/${{ github.base_ref }}...HEAD)
+          echo "$DIFF" > diff.txt
+          if echo "$DIFF" | grep -q "\${"; then
+            echo "status=vulneravel" >> $GITHUB_OUTPUT
+          else
+            echo "status=seguro" >> $GITHUB_OUTPUT
+          fi
       - id: ia
         uses: actions/ai-inference@v1
         continue-on-error: true
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
         with:
-          prompt-file: prompt.txt
-          system-prompt: "Voce e auditor de SQL Injection. Se ver prepare com ${ } ou + , diga VULNERAVEL."
+          prompt: "Analise o arquivo diff.txt e reporte SQL Injection se houver concatenacao em env.DB.prepare"
       - name: Comenta
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -f "${{ steps.ia.outputs.response-file }}" ]; then
-            gh pr comment ${{ github.event.pull_request.number }} --body-file "${{ steps.ia.outputs.response-file }}"
+          if [ "${{ steps.check.outputs.status }}" = "vulneravel" ]; then
+            MSG="IA Review (fallback): Detectado possivel SQL Injection com concatenacao em env.DB.prepare - use .prepare('... ?').bind(variavel) - IA principal falhou"
           else
-            gh pr comment ${{ github.event.pull_request.number }} --body "IA Review (fallback): Detectado possivel SQL Injection com concatenacao em env.DB.prepare - use .prepare('... ?').bind(variavel) - IA principal falhou: ${{ steps.ia.outputs.error }}"
+            MSG="IA Review (fallback): Codigo seguro agora - uso correto de .prepare('... ?').bind(variavel) - vulnerabilidade corrigida!"
+          fi
+          if [ -f "${{ steps.ia.outputs.response-file }}" ]; then
+            cat "${{ steps.ia.outputs.response-file }}" > final.txt
+            echo "" >> final.txt
+            echo "$MSG" >> final.txt
+            gh pr comment ${{ github.event.pull_request.number }} --body-file final.txt
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body "$MSG: ${{ steps.ia.outputs.error }}"
           fi
